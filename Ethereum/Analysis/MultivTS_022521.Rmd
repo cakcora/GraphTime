@@ -1,0 +1,224 @@
+---
+title: "TBD"
+author: "Smirnova, E. et al"
+date: "`r Sys.Date()`"
+output:
+  html_document
+---
+
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+rm(list=ls())
+# Set up the environment
+library(knitr)
+opts_chunk$set(cache.path='cache/', fig.path='img/', cache=F, tidy=T, fig.keep='high', echo=F, dpi=100, warnings=F, message=F, comment=NA, warning=F, results='as.is', fig.width = 10, fig.height = 6) #out.width=700, 
+library(pander)
+panderOptions('table.split.table', Inf)
+set.seed(1)
+library(dplyr)
+options(stringsAsFactors = FALSE)
+set.seed(41235)
+```
+
+
+```{r libraries, echo=FALSE}
+library(ggplot2)
+library(readxl)
+library(kableExtra)
+library(cowplot)
+library(plyr)
+library(dplyr)
+#library(magrittr)
+library(reshape2)
+library(tableone)
+library(caret)
+library(plotly)
+require(tidyverse)
+require(tidymodels)
+require(data.table)
+require(tidyposterior)
+require(tsibble)  #tsibble for time series based on tidy principles
+require(fable)  #for forecasting based on tidy principles
+require(ggfortify)  #for plotting timeseries
+require(forecast)  #for forecast function
+require(tseries)
+require(chron)
+require(lubridate)
+require(directlabels)
+require(zoo)
+require(lmtest)
+require(TTR)  #for smoothing the time series
+require(MTS)
+require(vars)
+require(fUnitRoots)
+require(lattice)
+require(grid)
+
+
+#https://bookdown.org/singh_pratap_tejendra/intro_time_series_r/multivariate-ts-analysis.html
+```
+
+```{r settings, echo=FALSE}
+mainDir <- here::here("Ethereum")
+
+# list of token files for betti numbers
+bettiDir <- file.path(mainDir, "betti")
+B0 <- read_rds(file.path(bettiDir, "allTokens_B0.rds"))
+B1 <- read_rds(file.path(bettiDir, "allTokens_B1.rds"))
+
+#rolling depth files
+depthDir <- file.path(mainDir, "depth")
+B0_depth <- read_rds(file.path(depthDir, "rd_allTokens_B0.rds"))
+B1_depth <- read_rds(file.path(depthDir, "rd_allTokens_B1.rds"))
+
+#merged data
+mergeDir <- file.path(mainDir, "merge")
+threshold <- 0.15
+data <- read_rds(file.path(mergeDir, paste0("df_allTokens_abs", 100*threshold, ".rds")))
+
+```
+
+# Classification tables for each token
+
+rows are predicted, columns are actual
+
+anomaly threshold = 0.25
+
+prediction horizon = 3
+
+prediction length = 100 
+
+```{r}
+df.m <- melt(data[c("day", "B0", "B1", "priceReturn")], id.vars = "day")
+p <- ggplot(df.m, aes(x=day, y = value, color = variable))+
+  geom_line()+
+  facet_grid(rows = "variable", scales= "free")+
+  theme_bw()+
+  theme(legend.position = "none")
+
+#ggplotly(p)
+```
+
+
+```{r}
+#################################
+#price prediction using multivariate TS
+##################################
+vars_predict <- c("B0", "B1", "priceReturn")
+inx <- apply(is.na(data[, which(names(data) %in% vars_predict)]), 1, any)
+df.no.na <- data[!inx, ]
+
+#prediction horizon
+pred_h = 3
+pred_length = 99#actually 100 but loop for i starts from 1
+total_length= dim(df.no.na)[1]
+
+#create data frame to store qulity results for each i
+quality <- data.frame(actual_anom=logical(),
+                      pred_anom=logical(),
+                     stringsAsFactors=FALSE)
+#to hold model fit results for each model
+MV_TSlist <- list()
+for (j in 1: (total_length - pred_h -pred_length)){
+  df_pred <- df.no.na[1:(pred_length +j),vars_predict]
+  newdata <- df.no.na[(pred_length +j+1):(pred_length +j+pred_h),]
+  # Converting a data.frame into mts
+  mymts = ts(df_pred,
+           frequency=1,
+           start = 1)
+
+  #######################################################
+  #time series prediction
+  #######################################################
+
+  # Creating a VAR model with vars
+  var.a <- vars::VAR(mymts,
+                   lag.max = 10, #highest lag order for lag length selection according to the choosen ic
+                   ic = "AIC", #information criterion
+                   type = "none") #type of deterministic regressors to include
+  #predict next h days
+  pred.i <- predict(var.a, newdata, n.ahead = pred_h)
+  #compare with actual
+  pred.price <- pred.i$fcst$priceReturn[,which(colnames(pred.i$fcst$priceReturn) == "fcst")]
+  actual_anom <- max(abs(newdata$priceReturn)) >=threshold
+  pred_anom <- max(abs(pred.price)) >=threshold
+  quality[j,] <- c(actual_anom, pred_anom)
+  
+  #############################
+  #model fit for each forecast
+  ############################
+  p_vals <- sapply(summary(var.a)$varresult, function(x) {
+    tmp <- x[["fstatistic"]]
+     pf(tmp[1], tmp[2], tmp[3], lower.tail = FALSE)  })
+
+  r_sq <- lapply(summary(var.a)$varresult, "[", "adj.r.squared") 
+  r_sq <- unlist(sapply(r_sq, "["))
+  res <- data.frame(p_val = p_vals,
+                  R_sq_adj = r_sq)
+  rownames(res) <- c("B0", "B1", "priceReturn")
+  #######################################################
+  #gragner causality
+  #######################################################
+
+  #selecting the variables
+  # Granger test for causality
+   #for causality function to give reliable results we need all the variables of the multivariate time series to be stationary. 
+  GC <- causality(var.a, #VAR model
+          cause = c("B0", "B1"))
+
+   Causal <-c(GC$Granger$p.value, GC$Instant$p.value) #h0: do not cause: large p-value -- no relationship
+   names(Causal) <- c("Granger", "Instant")
+
+   res_ls <- list(
+              TS = res,
+              Causality = Causal)
+
+   MV_TSlist[[j]] <- res_ls
+  
+}#end for j
+
+
+```
+
+```{r}
+classif <- table(pred_anom = quality$pred_anom, actual_anom = quality$actual_anom)
+classif
+```
+
+
+Multivariate time series results: model fit
+
+```{r, echo=FALSE}
+#p-values for each token
+df <- sapply(MV_TSlist,  function(x) x$TS$p_val)
+rownames(df) <- c("B0", "B1", "priceReturn")
+
+kable(df, digits = 3, caption = "Model p-values")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
+
+Multivariate time series results: adjusted r-squared
+
+```{r, echo=FALSE}
+#p-values for each token
+df <- sapply(MV_TSlist,  function(x) x$TS$R_sq_adj)
+rownames(df) <- c("B0", "B1", "priceReturn")
+
+kable(df, digits = 3, caption = "Model R-squared")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
+
+
+Multivariate time series results: gragner causality p-value
+
+H0: B0 and B1 do not cause price return: large p-value -- no relationship
+
+```{r, echo=FALSE}
+#p-values for each token
+df <- sapply(MV_TSlist,  function(x) x$Causality)
+
+kable(df, digits = 3, caption = "Model Gragner Causality p-values")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
+
+
