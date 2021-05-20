@@ -98,11 +98,11 @@ computeBetti = function(toprankFrom,toprankTo){
   
   colnames(B0)<-rep(scale_seq[-1],times=1)
   rowNames<-data.frame(Time=paste0('B0',periodList))
-  saveRDS(cbind(rowNames,B0),file=paste0(bettiDir,'allTokens_B0.rds'))
+  saveRDS(cbind(rowNames,B0),file=file.path(bettiDir,'allTokens_B0.rds'))
   
   colnames(B1)<-rep(scale_seq[-1],times=1)
   rowNames<-data.frame(Time=paste0('B1',periodList))
-  saveRDS(cbind(rowNames,B1),file=paste0(bettiDir,'allTokens_B1.rds'))
+  saveRDS(cbind(rowNames,B1),file=file.path(bettiDir,'allTokens_B1.rds'))
   
 }
 
@@ -112,7 +112,7 @@ rollDepth = function(tokenName){
   rollDepthPerFile = function(f,rollSize=7){
     #message(f)
     # read in Betti sequences
-    df <- readRDS(paste0(bettiDir,f))
+    df <- readRDS(file.path(bettiDir,f))
     # normalize Betti sequences
     df[,-1] <- df[,-1]/apply(df[,-1],1,function(x) max(1,max(x)))
     rollDepth = NULL
@@ -130,11 +130,11 @@ rollDepth = function(tokenName){
       rollDepth = rollDepth,
       type = str_sub(df$Time,0,-11)
     )
-    write_rds(res,paste0(depthDir,"rd_",f))
+    write_rds(res,file.path(depthDir,paste0("rd_",f)))
   }
   
   # body of rollDepth()
-  fileList = list.files(bettiDir,paste0("(allTokens).*")) #list.files(bettiDir)
+  fileList = list.files(bettiDir,file.path("(allTokens).*")) #list.files(bettiDir)
   invisible(map_dfr(fileList,rollDepthPerFile))
 }
 
@@ -161,21 +161,21 @@ featureGraph = function(){
   # body of featureGraph()
   dayVector = networkDF$time %>% unique()
   res = map_dfr(dayVector,featurePerDay)
-  write_rds(res,paste0(graphDir,"graphFeature_allTokens.rds"))
+  write_rds(res,file.path(graphDir,"graphFeature_allTokens.rds"))
   
 }
 
 ################# 
 dataMerge <- function(threshold){
   addGraphFeature = function(keyword="graphFeature"){
-    inputFile = list.files(graphDir,paste0("(allTokens).*"))
-    df = read_rds(paste0(graphDir,inputFile))
+    inputFile = list.files(graphDir,file.path("(allTokens).*"))
+    df = read_rds(file.path(graphDir,inputFile))
   }
   #
   addRollDepth = function(keyword="rd"){
     # 
-    inputFiles = list.files(depthDir,paste0("(allTokens).*"))
-    df = map_dfr(paste0(depthDir,inputFiles),function(inputFile){
+    inputFiles = list.files(depthDir,file.path("(allTokens).*"))
+    df = map_dfr(file.path(depthDir,inputFiles),function(inputFile){
       read_rds(inputFile)
     })
     
@@ -184,8 +184,8 @@ dataMerge <- function(threshold){
   }
   #
   addPrice = function(){
-    inputFile = list.files(tokenPriceDir,paste0("Eth_price.*"))
-    df = read_csv(paste0(tokenPriceDir,inputFile),col_types = cols(Date = col_date(format = "%Y-%m-%d")))
+    inputFile = list.files(tokenPriceDir,file.path("Eth_price.*"))
+    df = read_csv(file.path(tokenPriceDir,inputFile),col_types = cols(Date = col_date(format = "%Y-%m-%d")))
     df = rename(df,Open=`24h Open (USD)`)
   }
   #
@@ -227,7 +227,7 @@ dataMerge <- function(threshold){
   }
   # output the final data set
   outputRDS = function(){
-    fileName = paste0(mergeDir,"df_allTokens_abs",100*threshold,".rds")
+    fileName = file.path(mergeDir,paste0("df_allTokens_abs",100*threshold,".rds"))
     saveRDS(df,fileName)
   }
   # body of dataMerge()
@@ -280,14 +280,14 @@ RFmodel <- function(threshold,repNum){
     
   }
   outputRDS = function(prefix = "rf_"){
-    saveRDS(res,paste0(modelDir,prefix,"allTokens.rds"))
+    saveRDS(res,file.path(modelDir, paste0(prefix,"allTokens.rds")))
   }
   
   # body of RFmodel()
   inputfmls = c(M1="~ vertexNum + edgeNum + clusterCoef + openNorm",
                 M2="~ vertexNum + edgeNum + clusterCoef + openNorm + B0",
                 M3="~ vertexNum + edgeNum + clusterCoef + openNorm + B0 + B1")
-  file = paste0(mergeDir,"df_allTokens_abs",100*threshold,".rds")
+  file = file.path(mergeDir,paste0("df_allTokens_abs",100*threshold,".rds"))
   df = read_rds(file)
   flags = df %>% dplyr::select(contains("flag")) %>% colnames()
   df = df %>% mutate_if(is.logical,factor,levels=c("TRUE","FALSE"))
@@ -313,14 +313,14 @@ gatherResults <- function(){
   
   for (measureStr in c('Accuracy','Sensitivity','Precision','AUC')){
     df = map_dfr(files,function(f){
-      read_rds(paste0(modelDir,f)) %>% filter(measure == measureStr)
+      read_rds(file.path(modelDir,f)) %>% filter(measure == measureStr)
     })
 
     dfs = df %>% group_by(horizon,modelType) %>% summarise(avg = mean(value,na.rm = TRUE)) %>% ungroup()
     
     dfs = dfs %>% spread(modelType,avg)
     
-    write.csv(dfs,paste0(resultsDir,measureStr,"_",filtration,".csv"))
+    write.csv(dfs,file.path(resultsDir,paste0(measureStr,"_",filtration,".csv")))
     # dfs
     #  formula: 1 - M1/M4
     dfplot = map_dfc(paste0("M",2:3),function(x){
@@ -337,7 +337,7 @@ gatherResults <- function(){
       scale_fill_brewer() + xlab("Prediction horizon (unit: day)") + ylab(paste("Gain in:",measureStr)) + 
       theme_minimal() + theme(text = element_text(size=22),legend.position="bottom")
     
-    ggsave(paste0(resultsDir,measureStr,"_",filtration,".png"),g,width = 8,height = 6)
+    ggsave(file.path(resultsDir,paste0(measureStr,"_",filtration,".png")),g,width = 8,height = 6)
   }
   
 }

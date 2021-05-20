@@ -1,3 +1,4 @@
+rm(list=ls())
 library(igraph)
 library(TDA)
 library(tidyverse)
@@ -7,23 +8,25 @@ library(caret)
 library(fda.usc)
 library(ModelMetrics)
 library(lubridate)
+library(dplyr)
 options(dplyr.summarise.inform = FALSE)
 #library(fda.usc) # to compute modal depth
 
 #############
 # MAIN BODY #
 #############
-mainDir <- "/Users/iumar/Box Sync/Research/EthereumCurves-new/"
+#mainDir <- "/Users/iumar/Box Sync/Research/EthereumCurves-new/"
+mainDir <- here::here("Ethereum")
 
 folders <- c('data','tokenPrice','betti','graph','depth','merge','model','results')
 for (f in folders){
-  assign(paste0(f,'Dir'),paste0(mainDir,f,'/'))
-  if (!file.exists(paste0(mainDir,f))) 
-    dir.create(paste0(mainDir,f,'/'),showWarnings = FALSE)
+  assign(paste0(f,'Dir'),file.path(mainDir,f))
+  if (!file.exists(file.path(mainDir,f))) 
+    dir.create(file.path(mainDir,f,'/'),showWarnings = FALSE)
 }
 
 # load all functions
-source(paste0(mainDir,'functions.R'))
+source(file.path(mainDir,'functions.R'))
 
 # sequences of scale parameter values
 scale_seq=seq(0,1,by=0.01)  
@@ -32,7 +35,7 @@ scale_seq=seq(0,1,by=0.01)
 filtration <- factor('sublevel',levels = c('sublevel','superlevel')) # or 'superlevel'
 
 # load all token data
-allTokens <- readRDS(file=paste0(dataDir,'allTokens.rds'))
+allTokens <- readRDS(file=file.path(dataDir,'allTokens.rds'))
 
 # select days on which at least 5 tokens are traded
 selectedDays <- allTokens %>% group_by(time) %>% 
