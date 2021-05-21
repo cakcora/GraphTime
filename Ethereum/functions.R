@@ -1,31 +1,92 @@
-# drop top 1/500 percent of extreme observations
-dropExtreme = function(percentage = 1/500){
-  nRow = nrow(networkDF)
-  rankdrop = floor(nRow*percentage)
-  sortedValues = sort(networkDF$value)
-  A <- sortedValues[rankdrop]
-  B <- sortedValues[nRow-rankdrop+1]
-  networkDF <<- subset(networkDF,value>A) %>% subset(.,value<B)
-  afterFrq <<- table(networkDF$time)
+########
+featureGraph = function(topRank){
+  
+  selectTop <- function(dat,topRank){ 
+    frqFrom <- table(dat$from) %>% sort(decreasing = T) %>% names %>% .[1:topRank]
+    dat <- subset(dat,from %in% frqFrom)
+    frqTo <- table(dat$to) %>% sort(decreasing = T) %>% names %>% setdiff(frqFrom) %>% .[1:topRank]
+    topList <- union(frqFrom,frqTo)
+    dat <- subset(dat,(to %in% topList) & (from %in% topList))
+  }
+  
+  # calculate graph features per day
+  featurePerDay = function(inputDay){
+    
+    periodDF = networkDF %>% filter(time==inputDay)
+    periodDF <- selectTop(periodDF,topRank)
+    
+    # construct graph
+    G <- graph.data.frame(periodDF[,c("from","to")],directed = F)
+    
+    # the return result
+    tibble(
+      day = inputDay,
+      vertexNum = vcount(G),
+      edgeNum = ecount(G),
+      clusterCoef = transitivity(G)
+    )
+  }
+  # body of featureGraph()
+  periodList = networkDF$time %>% unique()
+  res = map_dfr(periodList,featurePerDay)
+  write_rds(res,paste0(graphDir,"graphFeature_allTokens.rds"))
+  
 }
 
 #################
-computeBetti = function(toprankFrom,toprankTo){
+computePD = function(topRank){
   
-  selectTop <- function(dat,toprankFrom,toprankTo){ 
-    # option 1
-    frq.from <- sort(table(dat$from),decreasing = T)[1:toprankFrom]
-    frq.to <- sort(table(dat$to),decreasing = T)[1:toprankTo]
-    toplist <- union(names(frq.to),names(frq.from)) %>% unique()
-    dat <- subset(dat,(to %in% toplist) & (from %in% toplist))
+  selectTop <- function(dat,topRank){ 
+    frqFrom <- table(dat$from) %>% sort(decreasing = T) %>% names %>% .[1:topRank]
+    dat <- subset(dat,from %in% frqFrom)
+    frqTo <- table(dat$to) %>% sort(decreasing = T) %>% names %>% setdiff(frqFrom) %>% .[1:topRank]
+    topList <- union(frqFrom,frqTo)
+    dat <- subset(dat,(to %in% topList) & (from %in% topList))
+  } 
+  
+  # body of computePD()
+  periodList = networkDF$time %>% unique() 
+  nDays <- length(periodList)
+  
+  for (i in 1:nDays){
+    periodDF <- networkDF %>% filter(time==periodList[i])
+    periodDF <- selectTop(periodDF,topRank)
+    periodDF <- periodDF %>% group_by(from,to) %>% summarise(value=mean(value)) 
     
-    # option 2
-    # frqFrom <- tapply(dat$value,dat$from,sum) %>% sort(decreasing = T) %>% .[1:toprankFrom] %>% names
-    # dat <- subset(dat,from %in% frqFrom)  
-    # frqTo <- tapply(dat$value,dat$to,sum) %>% sort(decreasing = T) %>% names %>% setdiff(frqFrom) %>% .[1:toprankTo]
-    # dat <- subset(dat,to %in% unique(union(frqFrom,frqTo)))
+    G <- graph.data.frame(periodDF[,c("from","to")],directed = F)
+    #print(vcount(G))
+    
+    # compute all simplices of dimension 0,1,2
+    cmplx <- cliques(G,min=1,max=3) # 
+    
+    # sublevel filtration
+    vertValues<-rep(1,length(V(G)))
+    names(vertValues)<-unique(c(periodDF$from,periodDF$to))
+    
+    # compute values of the feature function (here sum()) for each vertex
+    valuesFrom <- tapply(periodDF$value,periodDF$from,mean) 
+    vertValues[names(valuesFrom)] <- valuesFrom
+    
+    #valuesTo <- tapply(periodDF$value,periodDF$to,mean) 
+    #vertValues[names(valuesTo)] <- vertValues[names(valuesTo)] + valuesTo
+    
+    Flt <- funFiltration(FUNvalues = vertValues, 
+                         cmplx = cmplx, 
+                         sublevel = (filtration=='sublevel'))
+    PD <- filtrationDiag(filtration = Flt,maxdimension = 1,library = 'Dionysus',location = T)$diagram
+    
+    # replacing infinity in PD with finite value of 2
+    PD[PD[,3]==Inf,3]=2
+    
+    saveRDS(PD,file=paste0(pdDir,'PD_',filtration,'_',periodList[i],'.rds'))
+    
+    if (i %% 30 == 0) print(paste(i,'out of',nDays,'days processed'))
     
   }
+}
+
+#################
+computeBetti = function(){
   
   extractBetti=function(D){
     x <- D[,1] # birth times
@@ -44,51 +105,15 @@ computeBetti = function(toprankFrom,toprankTo){
   # body of computeBetti()
   periodList = networkDF$time %>% unique() 
   nDays <- length(periodList)
-  
+
   filt_len<-length(scale_seq)-1
   B0 = B1 = matrix(0,nrow = nDays,ncol = filt_len)
   
   for (i in 1:nDays){
-    periodDF <- subset(networkDF,time==periodList[i])
-    periodDF %>% group_by(from,to) %>% summarise(value=mean(value)) -> periodDF
-    periodDF <- selectTop(periodDF,toprankFrom,toprankTo)
+    # read in PD  
+    PD <- readRDS(file=paste0(pdDir,'PD_',filtration,'_',periodList[i],'.rds')) 
     
-    G <- graph.data.frame(periodDF[,c("from","to")],directed = F)
-    #print(length(V(G)))
-
-    # compute all simplices of dimension 0,1,2
-    cmplx <- cliques(G,min=1,max=3) # 
-
-    # sublevel filtration
-    vertValues<-rep(1,length(V(G)))
-    names(vertValues)<-unique(c(periodDF$from,periodDF$to))
-    
-    # compute values of the feature function (here sum()) for each vertex
-    valuesFrom <- tapply(periodDF$value,periodDF$from,mean) 
-    vertValues[names(valuesFrom)]<- valuesFrom
-    
-    #valuesTo <- tapply(periodDF$value,periodDF$to,mean) 
-    #vertValues[names(valuesTo)]<- vertValues[names(valuesTo)] + valuesTo
-    
-    # normalize values so that they lie in [0,1]
-    A<-min(vertValues); B<-max(vertValues)
-    if (B>A) vertValues<-(vertValues-A)/(B-A) else 
-      if (B>0) vertValues<-vertValues/B 
-
-    # rglplot(G,vertex.label=round(vertValues,digits = 2),
-    #         vertex.color='yellow',
-    #         vertex.size=4,
-    #         edge.width=2)
-        
-    Flt <- funFiltration(FUNvalues = vertValues, 
-                         cmplx = cmplx, 
-                         sublevel = (filtration=='sublevel'))
-    PD <- filtrationDiag(filtration = Flt,maxdimension = 1,library = 'Dionysus',location = T)$diagram
-    
-    # replacing +/- infinities in PD with finite values
-    if (filtration=='sublevel') PD[PD[,3]==Inf,3]=2 else PD[PD[,2]==-Inf,2]=-1
-    
-    # record Betti sequences
+    # compute Betti sequences
     B0[i,]<-extractBetti(PD[PD[,1]==0,2:3,drop=F])
     B1[i,]<-extractBetti(PD[PD[,1]==1,2:3,drop=F])
     
@@ -98,84 +123,54 @@ computeBetti = function(toprankFrom,toprankTo){
   
   colnames(B0)<-rep(scale_seq[-1],times=1)
   rowNames<-data.frame(Time=paste0('B0',periodList))
-  saveRDS(cbind(rowNames,B0),file=file.path(bettiDir,'allTokens_B0.rds'))
+  saveRDS(cbind(rowNames,B0),file=paste0(bettiDir,'allTokens_B0.rds'))
   
   colnames(B1)<-rep(scale_seq[-1],times=1)
   rowNames<-data.frame(Time=paste0('B1',periodList))
-  saveRDS(cbind(rowNames,B1),file=file.path(bettiDir,'allTokens_B1.rds'))
+  saveRDS(cbind(rowNames,B1),file=paste0(bettiDir,'allTokens_B1.rds'))
   
 }
 
 ########
-rollDepth = function(tokenName){
+rollDepth = function(){
   
   rollDepthPerFile = function(f,rollSize=7){
     #message(f)
     # read in Betti sequences
-    df <- readRDS(file.path(bettiDir,f))
+    df <- readRDS(paste0(bettiDir,f))
     # normalize Betti sequences
     df[,-1] <- df[,-1]/apply(df[,-1],1,function(x) max(1,max(x)))
     rollDepth = NULL
     
     for (i in rollSize:nrow(df)) {
-      betti_roll = df[(i-(rollSize-1)):i,-1]  
+      betti_roll = df[(i-rollSize+1):i,-1]  #df[(i-(rollSize-1)):i,-1]  
       # MBD depth
-      depth_betti_cur=as.vector(MBD(betti_roll,plotting = F)$MBD)
-      # OR modal depth
-      #depth_betti_cur=depth.mode(fdata(betti_roll))$dep 
-      rollDepth[i] = depth_betti_cur[length(depth_betti_cur)] # only take the last depth value
+      rollDepth[i] = MBD(df[(i-1):i,-1],betti_roll,plotting = F)$MBD[2]
     }
     res <- tibble(
       day = str_sub(df$Time,-10) %>% ymd,
       rollDepth = rollDepth,
       type = str_sub(df$Time,0,-11)
     )
-    write_rds(res,file.path(depthDir,paste0("rd_",f)))
+    write_rds(res,paste0(depthDir,"rd_",f))
   }
   
   # body of rollDepth()
-  fileList = list.files(bettiDir,file.path("(allTokens).*")) #list.files(bettiDir)
+  fileList = list.files(bettiDir,paste0("(allTokens).*")) #list.files(bettiDir)
   invisible(map_dfr(fileList,rollDepthPerFile))
-}
-
-########
-featureGraph = function(){
-  
-  # calculate graph features per day
-  featurePerDay = function(inputday){
-    
-    tmp = networkDF %>% filter(time==inputday)
-    
-    # create graph
-    rawGraph <- graph.data.frame(tmp[,c("from","to")],directed = F)
-    E(rawGraph)$weight = tmp$value 
-    
-    # the return result
-    tibble(
-      day = inputday,
-      vertexNum = vcount(rawGraph),
-      edgeNum = ecount(rawGraph),
-      clusterCoef = transitivity(rawGraph)
-    )
-  }
-  # body of featureGraph()
-  dayVector = networkDF$time %>% unique()
-  res = map_dfr(dayVector,featurePerDay)
-  write_rds(res,file.path(graphDir,"graphFeature_allTokens.rds"))
-  
 }
 
 ################# 
 dataMerge <- function(threshold){
   addGraphFeature = function(keyword="graphFeature"){
-    inputFile = list.files(graphDir,file.path("(allTokens).*"))
-    df = read_rds(file.path(graphDir,inputFile))
+    inputFile = list.files(graphDir,paste0("(allTokens).*"))
+    df = read_rds(paste0(graphDir,inputFile))
   }
   #
   addRollDepth = function(keyword="rd"){
     # 
-    inputFiles = list.files(depthDir,file.path("(allTokens).*"))
-    df = map_dfr(file.path(depthDir,inputFiles),function(inputFile){
+    inputFiles = list.files(depthDir,paste0("(allTokens).*"))
+    df = map_dfr(paste0(depthDir,inputFiles),function(inputFile){
       read_rds(inputFile)
     })
     
@@ -184,8 +179,8 @@ dataMerge <- function(threshold){
   }
   #
   addPrice = function(){
-    inputFile = list.files(tokenPriceDir,file.path("Eth_price.*"))
-    df = read_csv(file.path(tokenPriceDir,inputFile),col_types = cols(Date = col_date(format = "%Y-%m-%d")))
+    inputFile = list.files(tokenPriceDir,paste0("Eth_price.*"))
+    df = read_csv(paste0(tokenPriceDir,inputFile),col_types = cols(Date = col_date(format = "%Y-%m-%d")))
     df = rename(df,Open=`24h Open (USD)`)
   }
   #
@@ -227,7 +222,7 @@ dataMerge <- function(threshold){
   }
   # output the final data set
   outputRDS = function(){
-    fileName = file.path(mergeDir,paste0("df_allTokens_abs",100*threshold,".rds"))
+    fileName = paste0(mergeDir,"df_allTokens_abs",100*threshold,".rds")
     saveRDS(df,fileName)
   }
   # body of dataMerge()
@@ -255,6 +250,7 @@ RFmodel <- function(threshold,repNum){
           
           rf = randomForest::randomForest(as.formula(paste0(flagi,fmlstr)),
                                           dftrain,importance = TRUE, na.action = na.omit)
+          
           cf = caret::confusionMatrix(
             predict(rf,dftest),
             dftest %>% pull(flagi),
@@ -280,14 +276,14 @@ RFmodel <- function(threshold,repNum){
     
   }
   outputRDS = function(prefix = "rf_"){
-    saveRDS(res,file.path(modelDir, paste0(prefix,"allTokens.rds")))
+    saveRDS(res,paste0(modelDir,prefix,"allTokens.rds"))
   }
   
   # body of RFmodel()
   inputfmls = c(M1="~ vertexNum + edgeNum + clusterCoef + openNorm",
                 M2="~ vertexNum + edgeNum + clusterCoef + openNorm + B0",
                 M3="~ vertexNum + edgeNum + clusterCoef + openNorm + B0 + B1")
-  file = file.path(mergeDir,paste0("df_allTokens_abs",100*threshold,".rds"))
+  file = paste0(mergeDir,"df_allTokens_abs",100*threshold,".rds")
   df = read_rds(file)
   flags = df %>% dplyr::select(contains("flag")) %>% colnames()
   df = df %>% mutate_if(is.logical,factor,levels=c("TRUE","FALSE"))
@@ -313,14 +309,14 @@ gatherResults <- function(){
   
   for (measureStr in c('Accuracy','Sensitivity','Precision','AUC')){
     df = map_dfr(files,function(f){
-      read_rds(file.path(modelDir,f)) %>% filter(measure == measureStr)
+      read_rds(paste0(modelDir,f)) %>% filter(measure == measureStr)
     })
 
     dfs = df %>% group_by(horizon,modelType) %>% summarise(avg = mean(value,na.rm = TRUE)) %>% ungroup()
     
     dfs = dfs %>% spread(modelType,avg)
     
-    write.csv(dfs,file.path(resultsDir,paste0(measureStr,"_",filtration,".csv")))
+    write.csv(dfs,paste0(resultsDir,measureStr,"_",filtration,".csv"))
     # dfs
     #  formula: 1 - M1/M4
     dfplot = map_dfc(paste0("M",2:3),function(x){
@@ -337,7 +333,7 @@ gatherResults <- function(){
       scale_fill_brewer() + xlab("Prediction horizon (unit: day)") + ylab(paste("Gain in:",measureStr)) + 
       theme_minimal() + theme(text = element_text(size=22),legend.position="bottom")
     
-    ggsave(file.path(resultsDir,paste0(measureStr,"_",filtration,".png")),g,width = 8,height = 6)
+    ggsave(paste0(resultsDir,measureStr,"_",filtration,".png"),g,width = 8,height = 6)
   }
   
 }
