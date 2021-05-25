@@ -13,23 +13,24 @@ options(dplyr.summarise.inform = FALSE)
 #############
 # MAIN BODY #
 #############
-mainDir <- "/Users/iumar/Box Sync/Research/EthereumCurves-new/"
+#mainDir <- "/Users/iumar/Box Sync/Research/EthereumCurves-new/"
+mainDir <- here::here("Ethereum")
 
 folders <- c('data','tokenPrice','betti','graph','depth','merge','model','pd','results')
 for (f in folders){
-  assign(paste0(f,'Dir'),paste0(mainDir,f,'/'))
-  if (!file.exists(paste0(mainDir,f))) 
-    dir.create(paste0(mainDir,f,'/'),showWarnings = FALSE)
+  assign(paste0(f,'Dir'),file.path(mainDir,f))
+  if (!file.exists(file.path(mainDir,f))) 
+    dir.create(file.path(mainDir,f,'/'),showWarnings = FALSE)
 }
 
 # load all functions
-source(paste0(mainDir,'functions.R'))
+source(file.path(mainDir,'functions.R'))
 
 # filtration type
 filtration <- 'sublevel'
 
 # load all token data
-allTokens <- readRDS(file=paste0(dataDir,'allTokens.rds'))
+allTokens <- readRDS(file=file.path(dataDir,'allTokens.rds'))
 
 # select days on which at least 5 tokens are traded
 selectedDays <- allTokens %>% group_by(time) %>%
