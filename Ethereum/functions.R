@@ -1,19 +1,10 @@
 ########
-featureGraph = function(topRank){
-  
-  selectTop <- function(dat,topRank){ 
-    frqFrom <- table(dat$from) %>% sort(decreasing = T) %>% names %>% .[1:topRank]
-    dat <- subset(dat,from %in% frqFrom)
-    frqTo <- table(dat$to) %>% sort(decreasing = T) %>% names %>% setdiff(frqFrom) %>% .[1:topRank]
-    topList <- union(frqFrom,frqTo)
-    dat <- subset(dat,(to %in% topList) & (from %in% topList))
-  }
+featureGraph = function(){
   
   # calculate graph features per day
   featurePerDay = function(inputDay){
     
     periodDF = networkDF %>% filter(time==inputDay)
-    periodDF <- selectTop(periodDF,topRank)
     
     # construct graph
     G <- graph.data.frame(periodDF[,c("from","to")],directed = F)
@@ -261,7 +252,7 @@ RFmodel <- function(threshold,repNum){
           cftb = cfmatrix %>% as.data.frame()  %>% rownames_to_column() %>% as_tibble()
           names(cftb) = c("measure","value")
           cftb[nrow(cftb)+1,"measure"] <- "AUC"
-          cftb[nrow(cftb),"value"] <- auc(unlist(dftest[,flagi]),predict(rf,dftest,type = 'prob')[,"TRUE"])
+          cftb[nrow(cftb),"value"] <- pROC::auc(unlist(dftest[,flagi]),predict(rf,dftest,type = 'prob')[,"TRUE"],quiet=T) %>% as.numeric()
           cftb$horizon = flagi
           cftb$modelType = fmlname
           return(cftb)
