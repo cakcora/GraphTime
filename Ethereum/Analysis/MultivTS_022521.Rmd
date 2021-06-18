@@ -53,23 +53,13 @@ require(vars)
 require(fUnitRoots)
 require(lattice)
 require(grid)
-
+library(mgcv)
 
 #https://bookdown.org/singh_pratap_tejendra/intro_time_series_r/multivariate-ts-analysis.html
 ```
 
 ```{r settings, echo=FALSE}
 mainDir <- here::here("Ethereum")
-
-# list of token files for betti numbers
-bettiDir <- file.path(mainDir, "betti")
-B0 <- read_rds(file.path(bettiDir, "allTokens_B0.rds"))
-B1 <- read_rds(file.path(bettiDir, "allTokens_B1.rds"))
-
-#rolling depth files
-depthDir <- file.path(mainDir, "depth")
-B0_depth <- read_rds(file.path(depthDir, "rd_allTokens_B0.rds"))
-B1_depth <- read_rds(file.path(depthDir, "rd_allTokens_B1.rds"))
 
 #merged data
 mergeDir <- file.path(mainDir, "merge")
@@ -78,271 +68,189 @@ data <- read_rds(file.path(mergeDir, paste0("df_allTokens_abs", 100*threshold, "
 
 ```
 
-# Classification tables for each token
 
-rows are predicted, columns are actual
-
-anomaly threshold = 0.25
-
-prediction horizon = 3
-
-prediction length = 100 
-
-```{r}
-df.m <- melt(data[c("day", "B0", "B1", "priceReturn")], id.vars = "day")
-p <- ggplot(df.m, aes(x=day, y = value, color = variable))+
-  geom_line()+
-  facet_grid(rows = "variable", scales= "free")+
-  theme_bw()+
-  theme(legend.position = "none")
-
-#ggplotly(p)
-```
+# Regression-based approach using non-linear effects in betti 0 and betti 1
 
 
 ```{r}
-#################################
-#price prediction using multivariate TS
-##################################
-vars_predict <- c("B0", "B1", "priceReturn")
-inx <- apply(is.na(data[, which(names(data) %in% vars_predict)]), 1, any)
-df.no.na <- data[!inx, ]
-
-#prediction horizon
-pred_h = 3
-pred_length = 99#actually 100 but loop for i starts from 1
-total_length= dim(df.no.na)[1]
-
-#create data frame to store qulity results for each i
-quality <- data.frame(actual_anom=logical(),
-                      pred_anom=logical(),
-                     stringsAsFactors=FALSE)
-#to hold model fit results for each model
-MV_TSlist <- list()
-for (j in 1: (total_length - pred_h -pred_length)){
-  df_pred <- df.no.na[1:(pred_length +j),vars_predict]
-  newdata <- df.no.na[(pred_length +j+1):(pred_length +j+pred_h),]
-  # Converting a data.frame into mts
-  mymts = ts(df_pred,
-           frequency=1,
-           start = 1)
-
-  #######################################################
-  #time series prediction
-  #######################################################
-
-  # Creating a VAR model with vars
-  var.a <- vars::VAR(mymts,
-                   lag.max = 10, #highest lag order for lag length selection according to the choosen ic
-                   ic = "AIC", #information criterion
-                   type = "none") #type of deterministic regressors to include
-  #predict next h days
-  pred.i <- predict(var.a, newdata, n.ahead = pred_h)
-  #compare with actual
-  pred.price <- pred.i$fcst$priceReturn[,which(colnames(pred.i$fcst$priceReturn) == "fcst")]
-  actual_anom <- max(abs(newdata$priceReturn)) >=threshold
-  pred_anom <- max(abs(pred.price)) >=threshold
-  quality[j,] <- c(actual_anom, pred_anom)
+runGam <- function(df, nflags, inputfmls){
   
-  #############################
-  #model fit for each forecast
-  ############################
-  p_vals <- sapply(summary(var.a)$varresult, function(x) {
-    tmp <- x[["fstatistic"]]
-     pf(tmp[1], tmp[2], tmp[3], lower.tail = FALSE)  })
+#create holder for results
+accuracy_df = data.frame(matrix(vector(), nflags, length(inputfmls),
+                dimnames=list(c(), names(inputfmls))),
+                stringsAsFactors=F)
 
-  r_sq <- lapply(summary(var.a)$varresult, "[", "adj.r.squared") 
-  r_sq <- unlist(sapply(r_sq, "["))
-  res <- data.frame(p_val = p_vals,
-                  R_sq_adj = r_sq)
-  rownames(res) <- c("B0", "B1", "priceReturn")
-  #######################################################
-  #gragner causality
-  #######################################################
+auc_df <- data.frame(matrix(vector(), nflags, length(inputfmls),
+                dimnames=list(c(), names(inputfmls))),
+                stringsAsFactors=F)
 
-  #selecting the variables
-  # Granger test for causality
-   #for causality function to give reliable results we need all the variables of the multivariate time series to be stationary. 
-  GC <- causality(var.a, #VAR model
-          cause = c("B0", "B1"))
+sensitivity_df <- data.frame(matrix(vector(), nflags, length(inputfmls),
+                dimnames=list(c(), names(inputfmls))),
+                stringsAsFactors=F)
 
-   Causal <-c(GC$Granger$p.value, GC$Instant$p.value) #h0: do not cause: large p-value -- no relationship
-   names(Causal) <- c("Granger", "Instant")
+specificity_df <- data.frame(matrix(vector(), nflags, length(inputfmls),
+                dimnames=list(c(), names(inputfmls))),
+                stringsAsFactors=F)
 
-   res_ls <- list(
-              TS = res,
-              Causality = Causal)
+precision_df <- data.frame(matrix(vector(), nflags, length(inputfmls),
+                dimnames=list(c(), names(inputfmls))),
+                stringsAsFactors=F)
 
-   MV_TSlist[[j]] <- res_ls
-  
-}#end for j
+aic_lst <- list()
+pvals_lst <- list()
+
+  for(j in 1:length(inputfmls)){
+
+    fmlname <- names(inputfmls)[j]
+    fml <- inputfmls[j]
+    cftb_lst<- list()#to store model accuracy results
+    aic_vec <-c()
+      for(i in 1:nflags){
+        flagi <- paste0("flag", i)
+        vars_predict <- c("B0", "B1")
+
+        flags = df %>% dplyr::select(contains("flag")) %>% colnames()
+        df = df %>% mutate_if(is.logical,factor,levels=c("FALSE", "TRUE"))
+        df$clusterCoef = replace(df$clusterCoef,is.nan(df$clusterCoef),0)
+        dateRange = range(df$day)
+        spDate = dateRange[1] + diff(dateRange)/3*2
+        dftrain = df[df$day<spDate,]
+        dftest = df[!df$day<spDate,]
+
+        inx <- apply(is.na(dftrain[, which(names(dftrain) %in% vars_predict)]), 1, any)
+        dftrain <- dftrain[!inx, ]  
+        fm <- as.formula(paste(flagi, fml))
+        #logistic regression predictions
+        fit.gam <- gam(fm,
+        family = binomial(link= "logit"),
+            data = dftrain)
+
+        aic_vec <- c(aic_vec, AIC(fit.gam))
+        #p-value for coefficients
+          if(i ==1){
+            p_val <- c(summary(fit.gam)$p.pv, summary(fit.gam)$s.pv)
+            names(p_val) <- c(rownames(summary(fit.gam)$p.table), rownames(summary(fit.gam)$s.table))}
+          else{p_val <- rbind(p_val, c(summary(fit.gam)$p.pv, summary(fit.gam)$s.pv))}
+
+        predicted <- ifelse(predict(fit.gam,dftest, type = "response") <0.5, "FALSE", "TRUE")
+        predicted <- factor(predicted, levels = c("TRUE", "FALSE"))
+        cf = caret::confusionMatrix(
+            predicted,
+            dftest %>% pull(flagi),
+            positive = "TRUE"
+          )
+
+        cfmatrix = rbind(as.matrix(cf,what="overall"),
+                           as.matrix(cf,what="classes"))
+        cftb = cfmatrix %>% as.data.frame()  %>% rownames_to_column() %>% as_tibble()
+        names(cftb) = c("measure","value")
+        cftb[nrow(cftb)+1,"measure"] <- "AUC"
+        cftb[nrow(cftb),"value"] <- pROC::auc(unlist(dftest[,flagi]),
+                          predict(fit.gam,dftest, type = "response"),
+                          levels = c("FALSE", "TRUE"), quiet=T) %>% as.numeric()
+        cftb$horizon = flagi
+        cftb$modelType = fmlname
+        #save as a list for each flag
+        cftb_lst[[i]] <- cftb
+      }
+
+    #save aic and p-vals for each model
+    aic_lst[[j]] <- aic_vec
+    pvals_lst[[j]] <- p_val
 
 
+    #extract accuracy for each flag
+    accuracy_df[,j] <- unlist(lapply(cftb_lst, function(x) x[x$measure == "Accuracy", "value"]))
+    auc_df[,j] <- unlist(lapply(cftb_lst, function(x) x[x$measure == "AUC", "value"]))
+    sensitivity_df[,j] <- unlist(lapply(cftb_lst, function(x) x[x$measure == "Sensitivity", "value"]))
+    specificity_df[,j] <- unlist(lapply(cftb_lst, function(x) x[x$measure == "Specificity", "value"]))
+    precision_df[,j] <- unlist(lapply(cftb_lst, function(x) x[x$measure == "Precision", "value"]))
+
+  }#end for j
+
+accuracy_df$horizon <- paste0("flag", 1:nflags)
+auc_df$horizon <- paste0("flag", 1:nflags)
+sensitivity_df$horizon <- paste0("flag", 1:nflags)
+specificity_df$horizon <- paste0("flag", 1:nflags)
+precision_df$horizon <- paste0("flag", 1:nflags)
+
+return(list(aic = aic_lst, pvals = pvals_lst,
+            accuracy = accuracy_df,
+            auc = auc_df,
+            sensitivity = sensitivity_df,
+            specificity = specificity_df,
+            precision = precision_df))
+}
 ```
+
+
+## Models without autocorrelation
+
+For each of the flags 1, ... 7, the following models are fitted
+
+M1= ~ vertexNum + edgeNum + clusterCoef + openNorm
+
+M2=~ vertexNum + edgeNum + clusterCoef + openNorm + s(B0, bs = 'ps', k = 7)
+
+M3=~ vertexNum + edgeNum + clusterCoef + openNorm + s(B0, bs = 'ps', k = 7) + s(B0, bs = 'ps', k = 7)
 
 ```{r}
-classif <- table(pred_anom = quality$pred_anom, actual_anom = quality$actual_anom)
-classif
+inputfmls = c(M1="~ vertexNum + edgeNum + clusterCoef + openNorm",
+                M2="~ vertexNum + edgeNum + clusterCoef + openNorm + s(B0, bs = 'ps', k = 7)",
+                M3="~ vertexNum + edgeNum + clusterCoef + openNorm + s(B0, bs = 'ps', k = 7) + s(B0, bs = 'ps', k = 7)")
+
+res_nocorr <- runGam(df = data, nflags = 7, inputfmls = inputfmls)
+
 ```
 
-
-Multivariate time series results: model fit
-
-```{r, echo=FALSE}
-#p-values for each token
-df <- sapply(MV_TSlist,  function(x) x$TS$p_val)
-rownames(df) <- c("B0", "B1", "priceReturn")
-
-kable(df, digits = 3, caption = "Model p-values")%>%
-  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
-```
-
-Multivariate time series results: adjusted r-squared
-
-```{r, echo=FALSE}
-#p-values for each token
-df <- sapply(MV_TSlist,  function(x) x$TS$R_sq_adj)
-rownames(df) <- c("B0", "B1", "priceReturn")
-
-kable(df, digits = 3, caption = "Model R-squared")%>%
-  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
-```
-
-
-Multivariate time series results: gragner causality p-value
-
-H0: B0 and B1 do not cause price return: large p-value -- no relationship
-
-```{r, echo=FALSE}
-#p-values for each token
-df <- sapply(MV_TSlist,  function(x) x$Causality)
-
-kable(df, digits = 3, caption = "Model Gragner Causality p-values")%>%
-  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
-```
-
-# Regression-based approach
-
-Predict flag 1 to 7 
+AUC for each model
 
 ```{r}
-
-library(mgcv)
-
-vars_predict <- c("B0", "B1", "priceReturn")
-inx <- apply(is.na(data[, which(names(data) %in% vars_predict)]), 1, any)
-df.no.na <- data[!inx, ]
-
-data_train <- df.no.na[1:300,]
-data_test <- df.no.na[301:dim(df.no.na)[1],]
-
-#logistic regression predictions
-fit.gam <- gam(flag7 ~ vertexNum + edgeNum + clusterCoef + 
-      s(B0, bs = "ps", k = 7)+
-      s(B1, bs = "ps", k = 7),
-    family = binomial(link= "logit"),
-    data = data_train)
-
-summary(fit.gam)
-
-#confusion matrix
-
+kable(res_nocorr$auc, digits =3)%>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
 ```
+
+Accuracy for each model
+
+```{r}
+kable(res_nocorr$accuracy, digits =3)%>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
+
+Sensitivity for each model
+
+```{r}
+kable(res_nocorr$sensitivity, digits =3)%>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
+
+Specificity for each model
+
+```{r}
+kable(res_nocorr$specificity, digits =3)%>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
+
+Precision for each model
+
+```{r}
+kable(res_nocorr$precision, digits =3)%>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+```
+
 
 Non-linear effect in betti 0 
 
-```{r}
+```{r, eval = FALSE}
 layout(matrix(1:2, nrow = 1))
 plot(fit.gam, shade = TRUE)
 ```
 
-Predictions
-
-```{r}
-
-predicted <- predict(fit.gam, type = "response")
-df.pred <- data.frame(actual = ifelse(data_train$flag7 == TRUE, 1, 0),
-                      predicted = predicted)
-
-#in your case, this will be 
-df.pred$actual <- factor(df.pred$actual)
-hist_predicted = ggplot(df.pred, 
-                        aes(predicted, group=actual, fill = actual)) + 
-  geom_histogram(aes(y=..density..),
-                 position="identity", bins = 20, alpha = 0.6)
-hist_predicted
-```
-
-
-```{r}
-auc <- roc(response = df.pred$actual, predictor = df.pred$predicted)
-auc
-p.roc <- ggroc(auc, color = "darkred") 
-
-p.roc <- p.roc +
-  annotate("text", x = 0.25, y = 0.75, label = paste("AUC =", round(auc$auc[1],3)),
-           color = "darkred", size = 6)+
-  theme_bw()+  theme(axis.title.x = element_text( size=12), 
-                     axis.text.x  = element_text( size=12),
-                     axis.text.y  = element_text( size=12),
-                     axis.title.y=element_text(size=12))
-p.roc
-```
-
-
-Confusion matrix: training
-
-```{r}
-table(actual = df.pred$actual,
-      predicted = ifelse(df.pred$predicted <0.5, 0,1))
-```
-
-
-Predictions test
-
-```{r}
-
-predicted <- predict(fit.gam, newdata = data_test, type = "response")
-df.pred <- data.frame(actual = ifelse(data_test$flag7 == TRUE, 1, 0),
-                      predicted = predicted)
-
-#in your case, this will be 
-df.pred$actual <- factor(df.pred$actual)
-hist_predicted = ggplot(df.pred, 
-                        aes(predicted, group=actual, fill = actual)) + 
-  geom_histogram(aes(y=..density..),
-                 position="identity", bins = 20, alpha = 0.6)
-hist_predicted
-```
-
-
-```{r}
-auc <- roc(response = df.pred$actual, predictor = df.pred$predicted)
-auc
-p.roc <- ggroc(auc, color = "darkred") 
-
-p.roc <- p.roc +
-  annotate("text", x = 0.25, y = 0.75, label = paste("AUC =", round(auc$auc[1],3)),
-           color = "darkred", size = 6)+
-  theme_bw()+  theme(axis.title.x = element_text( size=12), 
-                     axis.text.x  = element_text( size=12),
-                     axis.text.y  = element_text( size=12),
-                     axis.title.y=element_text(size=12))
-p.roc
-```
-
-
-Confusion matrix: training
-
-```{r}
-table(actual = df.pred$actual,
-      predicted = ifelse(df.pred$predicted <0.5, 0,1))
-```
 
 # Gam with interaction between betti 0 and betti 1
 
 
-```{r}
+```{r, eval = FALSE}
 
 #logistic regression predictions
 fit.gam <- gam(flag7 ~ vertexNum + edgeNum + clusterCoef + 
@@ -355,7 +263,7 @@ summary(fit.gam)
 
 # Gam with autocorrelation
 
-```{r}
+```{r, eval = FALSE}
 
 gam_6_ar0 <- gamm(flag7 ~ t2(B0, B1,
                             k = 7,
