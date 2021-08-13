@@ -77,7 +77,7 @@ computePD = function(topRank){
 }
 
 #################
-computeBetti = function(){
+computeBetti = function(scale_seq){
   
   extractBetti=function(D){
     x <- D[,1] # birth times
@@ -113,22 +113,117 @@ computeBetti = function(){
   }
   
   colnames(B0)<-rep(scale_seq[-1],times=1)
-  rowNames<-data.frame(Time=paste0('B0',periodList))
-  saveRDS(cbind(rowNames,B0),file=file.path(bettiDir,'allTokens_B0.rds'))
+  rowNames<-data.frame(Time=paste0('betti0',periodList))
+  saveRDS(cbind(rowNames,B0),file=file.path(bettiDir,'allTokens_betti0.rds'))
   
   colnames(B1)<-rep(scale_seq[-1],times=1)
-  rowNames<-data.frame(Time=paste0('B1',periodList))
-  saveRDS(cbind(rowNames,B1),file=file.path(bettiDir,'allTokens_B1.rds'))
+  rowNames<-data.frame(Time=paste0('betti1',periodList))
+  saveRDS(cbind(rowNames,B1),file=file.path(bettiDir,'allTokens_betti1.rds'))
   
 }
 
+#################
+computePL = function(scale_seq){
+
+  periodList = networkDF$time %>% unique() 
+  nDays <- length(periodList)
+  
+  filt_len<-length(scale_seq)
+  PL0 = PL1 = matrix(0,nrow = nDays,ncol = filt_len)
+  
+  for (i in 1:nDays){
+    # read in PD  
+    PD <- readRDS(file=file.path(pdDir,paste0('PD_',filtration,'_',periodList[i],'.rds'))) 
+    
+    # compute PLs
+    PL0[i,]<-landscape(PD,dimension=0,KK=1,tseq=scale_seq)
+    PL1[i,]<-landscape(PD,dimension=1,KK=1,tseq=scale_seq)
+    
+    if (i %% 30 == 0) print(paste(i,'out of',nDays,'days processed'))
+    
+  }
+  
+  colnames(PL0)<-scale_seq
+  rowNames<-data.frame(Time=paste0('pl0',periodList))
+  saveRDS(cbind(rowNames,PL0),file=file.path(plDir,'allTokens_pl0.rds'))
+  
+  colnames(PL1)<-scale_seq
+  rowNames<-data.frame(Time=paste0('pl1',periodList))
+  saveRDS(cbind(rowNames,PL1),file=file.path(plDir,'allTokens_pl1.rds')) 
+}
+
+#################
+computePI = function(res){
+  PI <- function(D,res,sig,maxB,maxP){
+    # D - N by 2 matrix (columns contain birth and persistence values respectively)
+    PSurfaceHk = function(point) {
+      x = point[1]
+      y = point[2]
+      out1 = pnorm(x_upper, mean = x, sd = sig) - pnorm(x_lower,mean = x, sd = sig)
+      out2 = pnorm(y_upper, mean = y, sd = sig) - pnorm(y_lower,mean = y, sd = sig)
+      wgt = y/maxP * (y < maxP) + 1 * (y >= maxP)
+      return(out1 %o% out2 * wgt)
+    }
+    # Body of PI()
+    dy = maxP/res
+    y_lower = seq(0, maxP, length.out = res)
+    y_upper = y_lower + dy
+
+    dx = maxB/res
+    x_lower = seq(0,maxB,length.out = res)
+    x_upper = x_lower + dx
+    Psurf_mat = apply(D, 1, PSurfaceHk)
+
+    out = rowSums(Psurf_mat)
+    return(out)
+  }
+  
+  
+  periodList = networkDF$time %>% unique() 
+  nDays <- length(periodList)
+  
+  PD <- list()
+  maxB0 <- maxB1 <- c()
+  maxP0 <- maxP1 <- c()
+  for (i in 1:nDays){
+    # read in PD  
+    pd <- readRDS(file=file.path(pdDir,paste0('PD_',filtration,'_',periodList[i],'.rds'))) 
+    pd[,3] <- pd[,3]-pd[,2]
+    maxB0[i] <- max(pd[pd[,1]==0,2])
+    maxP0[i] <- max(pd[pd[,1]==0,3])
+    maxB1[i] <- max(pd[pd[,1]==1,2])
+    maxP1[i] <- max(pd[pd[,1]==1,3])
+    PD[[i]] <- pd
+  }  
+    
+  # compute PIs
+  PI0 = PI1 = matrix(0,nrow = nDays,ncol = res^2)
+  sigH0 <- 0.5*max(maxP0)/res
+  sigH1 <- 0.5*max(maxP1)/res
+  for (i in 1:nDays){
+    pd <- PD[[i]]
+    PI0[i,]<-PI(pd[pd[,1]==0,2:3],res,sigH0,max(maxB0),max(maxP0))
+    PI1[i,]<-PI(pd[pd[,1]==1,2:3],res,sigH1,max(maxB1),max(maxP1))
+    
+    if (i %% 30 == 0) print(paste(i,'out of',nDays,'days processed'))
+    
+  }
+
+  rowNames<-data.frame(Time=paste0('pi0',periodList))
+  saveRDS(cbind(rowNames,PI0),file=file.path(piDir,'allTokens_pi0.rds'))
+  
+  rowNames<-data.frame(Time=paste0('pi1',periodList))
+  saveRDS(cbind(rowNames,PI1),file=file.path(piDir,'allTokens_pi1.rds')) 
+}
+
+
 ########
-rollDepth = function(){
+rollDepth = function(topoSignature){
   
   rollDepthPerFile = function(f,rollSize=7){
     #message(f)
-    # read in Betti sequences
-    df <- readRDS(file.path(bettiDir,f))
+    # read in signatures
+    df <- readRDS(file.path(get(paste0(topoSignature,'Dir')),f))
     # normalize Betti sequences
     df[,-1] <- df[,-1]/apply(df[,-1],1,function(x) max(1,max(x)))
     rollDepth = NULL
@@ -147,18 +242,18 @@ rollDepth = function(){
   }
   
   # body of rollDepth()
-  fileList = list.files(bettiDir,paste0("(allTokens).*")) #list.files(bettiDir)
+  fileList = list.files(get(paste0(topoSignature,'Dir')),paste0("(allTokens).*")) #list.files(bettiDir)
   invisible(map_dfr(fileList,rollDepthPerFile))
 }
 
 ################# 
 dataMerge <- function(threshold){
-  addGraphFeature = function(keyword="graphFeature"){
+  addGraphFeature = function(){
     inputFile = list.files(graphDir,paste0("(allTokens).*"))
     df = read_rds(file.path(graphDir,inputFile))
   }
   #
-  addRollDepth = function(keyword="rd"){
+  addRollDepth = function(){
     # 
     inputFiles = list.files(depthDir,paste0("(allTokens).*"))
     df = map_dfr(file.path(depthDir,inputFiles),function(inputFile){
@@ -227,13 +322,12 @@ dataMerge <- function(threshold){
 }
 
 ###############
-RFmodel <- function(threshold,repNum){
+RFmodel <- function(threshold,topoSignature,repNum){
   
   RFpred = function(repNum = 100){
     
     # iterate from flag1 to flag7
     res = map_dfr(flags,function(flagi){
-      set.seed(1)
       #message(flagi)
       flag_resRuns = map_dfr(1:repNum,function(repID){
         # iterate all formula
@@ -267,13 +361,13 @@ RFmodel <- function(threshold,repNum){
     
   }
   outputRDS = function(prefix = "rf_"){
-    saveRDS(res,file.path(modelDir,paste0(prefix,"allTokens.rds")))
+    saveRDS(res,file.path(modelDir,paste0(prefix,"allTokens_",topoSignature,".rds")))
   }
   
   # body of RFmodel()
   inputfmls = c(M1="~ vertexNum + edgeNum + clusterCoef + openNorm",
-                M2="~ vertexNum + edgeNum + clusterCoef + openNorm + B0",
-                M3="~ vertexNum + edgeNum + clusterCoef + openNorm + B0 + B1")
+                M2=paste0("~ vertexNum + edgeNum + clusterCoef + openNorm + ",topoSignature,'0'),
+                M3=paste0("~ vertexNum + edgeNum + clusterCoef + openNorm + ",topoSignature,'0 + ',topoSignature,'1'))
   file = file.path(mergeDir,paste0("df_allTokens_abs",100*threshold,".rds"))
   df = read_rds(file)
   flags = df %>% dplyr::select(contains("flag")) %>% colnames()
@@ -291,8 +385,8 @@ RFmodel <- function(threshold,repNum){
 }
 
 #################
-gatherResults <- function(){
-  files = list.files(modelDir)
+gatherResults <- function(topoSignature){
+  files = list.files(modelDir,paste0("(allTokens).*",topoSignature))
   
   gain = function(x,ben){
     return(1-ben/x)
@@ -307,7 +401,7 @@ gatherResults <- function(){
     
     dfs = dfs %>% spread(modelType,avg)
     
-    write.csv(dfs,file.path(resultsDir,paste0(measureStr,"_",filtration,".csv")))
+    write.csv(dfs,file.path(resultsDir,paste0(measureStr,"_",filtration,"_",topoSignature,".csv")))
     # dfs
     #  formula: 1 - M1/M4
     dfplot = map_dfc(paste0("M",2:3),function(x){
@@ -324,7 +418,7 @@ gatherResults <- function(){
       scale_fill_brewer() + xlab("Prediction horizon (unit: day)") + ylab(paste("Gain in:",measureStr)) + 
       theme_minimal() + theme(text = element_text(size=22),legend.position="bottom")
     
-    ggsave(file.path(resultsDir,paste0(measureStr,"_",filtration,".png")),g,width = 8,height = 6)
+    ggsave(file.path(resultsDir,paste0(measureStr,"_",filtration,"_",topoSignature,".png")),g,width = 8,height = 6)
   }
   
 }

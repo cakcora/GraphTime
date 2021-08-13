@@ -8,6 +8,7 @@ library(fda.usc)
 library(pROC)
 library(lubridate)
 library(here)
+library(tictoc)
 options(dplyr.summarise.inform = FALSE)
 #library(fda.usc) # to compute modal depth
 
@@ -18,7 +19,7 @@ options(dplyr.summarise.inform = FALSE)
 #mainDir <- "/Users/iumar/Box Sync/Research/EthereumCurves-new/"
 mainDir <- here::here("Ethereum")
 
-folders <- c('data','tokenPrice','betti','graph','depth','merge','model','pd','results')
+folders <- c('data','tokenPrice','betti','pl','pi','graph','depth','merge','model','pd','results')
 for (f in folders){
   assign(paste0(f,'Dir'),file.path(mainDir,f))
   if (!file.exists(file.path(mainDir,f))) 
@@ -51,25 +52,41 @@ networkDF <- inner_join(networkDF,minMaxValues,by="name") %>%
 featureGraph() 
 
 # compute PDs
-topRank <- 250
+topRank <- 150
 computePD(topRank)
 
 # compute Betti sequences
 scale_seq=c(seq(0,1,by=0.01),2) # sequences of scale values
-computeBetti()
+tic()
+computeBetti(scale_seq)
+toc()
+
+# compute Persistence Landscapes (PL)
+scale_seq=seq(0,2,by=0.02) # sequences of scale values
+tic()
+computePL(scale_seq)
+toc()
+
+# compute Persistence Images (PI)
+res <- 10 # PI resolution
+tic()
+computePI(res)
+toc()
 
 # compute rolling depth
-rollDepth()
+topoSignature <- 'pl' # choose from 'betti', pl','pi'
+rollDepth(topoSignature)
 
 # merge data
 threshold <- 0.05 # day is anomalous if price return changes by more than this threshold in the next h days. 
 dataMerge(threshold)
 
 # fit RF model
-RFmodel(threshold,repNum=5)
+set.seed(1)
+RFmodel(threshold,topoSignature,repNum=10)
 
 # gather all results
-gatherResults()
+gatherResults(topoSignature)
 
 
 
