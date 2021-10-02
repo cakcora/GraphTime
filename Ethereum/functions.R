@@ -45,21 +45,29 @@ computePD = function(topRank){
     periodDF <- periodDF %>% group_by(from,to) %>% summarise(value=mean(value)) 
     
     G <- graph.data.frame(periodDF[,c("from","to")],directed = F)
+    G <- igraph::simplify(G)
     #print(vcount(G))
     
     # compute all simplices of dimension 0,1,2
-    cmplx <- cliques(G,min=1,max=3) # 
-    
+    zeroSimplx=as.list(V(G))
+    oneSimplx=data.frame(t(as_edgelist(G,names = F)))
+    twoSimplx=data.frame(matrix(triangles(G),nrow = 3))
+    cmplx=c(zeroSimplx,oneSimplx,twoSimplx)
+    # cmplx <- cliques(G,min=1,max=3) # slow to run
+
     # sublevel filtration
-    vertValues<-rep(1,length(V(G)))
-    names(vertValues)<-unique(c(periodDF$from,periodDF$to))
+    vertValues <- matrix(0,nrow=length(V(G)),ncol=2)
+    rownames(vertValues) <- unique(c(periodDF$from,periodDF$to))
+    colnames(vertValues) <- c('sent','received')
     
-    # compute values of the feature function (here sum()) for each vertex
     valuesFrom <- tapply(periodDF$value,periodDF$from,mean) 
-    vertValues[names(valuesFrom)] <- valuesFrom
+    vertValues[names(valuesFrom),1] <- valuesFrom
     
-    #valuesTo <- tapply(periodDF$value,periodDF$to,mean) 
-    #vertValues[names(valuesTo)] <- vertValues[names(valuesTo)] + valuesTo
+    valuesTo <- tapply(periodDF$value,periodDF$to,mean) 
+    vertValues[names(valuesTo),2] <- valuesTo
+    
+    vertValues <- rowSums(vertValues)
+    vertValues <- vertValues/max(vertValues)
     
     Flt <- funFiltration(FUNvalues = vertValues, 
                          cmplx = cmplx, 
@@ -67,7 +75,7 @@ computePD = function(topRank){
     PD <- filtrationDiag(filtration = Flt,maxdimension = 1,library = 'Dionysus',location = T)$diagram
     
     # replacing infinity in PD with finite value of 2
-    PD[PD[,3]==Inf,3]=2
+    PD[PD[,3]==Inf,3]=1.01
     
     saveRDS(PD,file=file.path(pdDir,paste0('PD_',filtration,'_',periodList[i],'.rds')))
     
@@ -232,6 +240,11 @@ rollDepth = function(topoSignature){
       betti_roll = df[(i-rollSize+1):i,-1]  #df[(i-(rollSize-1)):i,-1]  
       # MBD depth
       rollDepth[i] = MBD(df[(i-1):i,-1],betti_roll,plotting = F)$MBD[2]
+      # Multivariate depth
+      # rollDepth[i] = mdepth.TD(x=df[i,-1],xx=betti_roll)$dep
+      # rollDepth[i] = depth(u=df[i,-1],x=betti_roll)
+      
+      
     }
     res <- tibble(
       day = str_sub(df$Time,-10) %>% ymd,
@@ -281,7 +294,7 @@ dataMerge <- function(threshold){
   # flag under all horizon
   flagPeriod = function(flagRange = 1:7){
     # flag under one horizon
-    flagDaysFun = function(inputVector,ndays=3){
+    flagDaysFun = function(inputVector,ndays){
       # flag 1:7 days
       absReturn = abs(inputVector)
       l = length(inputVector)

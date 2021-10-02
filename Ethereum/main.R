@@ -16,7 +16,6 @@ options(dplyr.summarise.inform = FALSE)
 # MAIN BODY #
 #############
 
-#mainDir <- "/Users/iumar/Box Sync/Research/EthereumCurves-new/"
 mainDir <- here::here("Ethereum")
 
 folders <- c('data','tokenPrice','betti','pl','pi','graph','depth','merge','model','pd','results')
@@ -39,14 +38,13 @@ allTokens <- readRDS(file=file.path(dataDir,'allTokens.rds'))
 selectedDays <- allTokens %>% group_by(time) %>%
                 summarise(n=length(unique(name))) %>%
                 filter(n>=5) %>% .[,1] %>% unlist()
-allTokens %>% filter(time %in% selectedDays) -> networkDF
+
+networkDF <- allTokens %>% filter(time %in% selectedDays)
 networkDF$time <- ymd(networkDF$time)
 
 # normalize "value" 
-minMaxValues <- networkDF %>% group_by(name) %>% 
-                summarise(minValue=min(value),maxValue=max(value)) 
-networkDF <- inner_join(networkDF,minMaxValues,by="name") %>% 
-             mutate(value=(log10(maxValue)-log10(value))/(log10(maxValue)-log10(minValue))) %>% .[,1:4]
+networkDF <- networkDF %>% group_by(name) %>% 
+  mutate(value=log(value)/log(max(value))) %>% .[,1:4]          
              
 # compute graph features
 featureGraph() 
@@ -56,13 +54,13 @@ topRank <- 150
 computePD(topRank)
 
 # compute Betti sequences
-scale_seq=c(seq(0,1,by=0.01),2) # sequences of scale values
+scale_seq=seq(0,1.01,length.out = 100) # sequences of scale values
 tic()
 computeBetti(scale_seq)
 toc()
 
 # compute Persistence Landscapes (PL)
-scale_seq=seq(0,2,by=0.02) # sequences of scale values
+scale_seq=seq(0,1.01,by=0.01) # sequences of scale values
 tic()
 computePL(scale_seq)
 toc()
@@ -74,7 +72,7 @@ computePI(res)
 toc()
 
 # compute rolling depth
-topoSignature <- 'pl' # choose from 'betti', pl','pi'
+topoSignature <- 'betti' # choose from 'betti', pl','pi'
 rollDepth(topoSignature)
 
 # merge data
